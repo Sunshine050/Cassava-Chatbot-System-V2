@@ -10,7 +10,7 @@ if (!fs.existsSync(logsDir)) {
 // Define log format
 const logFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-  winston.format.errors({ stack: true }),
+  winston.format.errors({ stack: false }), // ปิด stack trace เพื่อลดความยาว
   winston.format.json()
 );
 
@@ -65,7 +65,6 @@ logger.requestLogger = (req, res, next) => {
     if (res.statusCode >= 400) {
       logger.warn('HTTP Request Failed', logData);
     } else if (process.env.NODE_ENV === 'development') {
-      // Log successful requests only in dev
       logger.info('HTTP Request', logData);
     }
   });
@@ -79,7 +78,6 @@ logger.logError = (error, context = {}) => {
 
   logger.error('Application Error', {
     message: error.message,
-    stack: error.stack,
     ...context
   });
 };

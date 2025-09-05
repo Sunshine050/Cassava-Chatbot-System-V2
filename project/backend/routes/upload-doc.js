@@ -9,26 +9,27 @@ const logger = require('../config/logger');
 const router = express.Router();
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: async (req, file, cb) => {
     const uploadPath = path.join(__dirname, '../Uploads');
-    fs.mkdir(uploadPath, { recursive: true })
-      .then(() => cb(null, uploadPath))
-      .catch((err) => cb(err));
+    try {
+      await fs.mkdir(uploadPath, { recursive: true });
+      cb(null, uploadPath);
+    } catch (err) {
+      cb(err);
+    }
   },
   filename: (req, file, cb) => {
-    // ใช้ชื่อไฟล์ดั้งเดิมโดยแปลง UTF-8 และจัดการตัวอักษรพิเศษอย่างชัดเจน
-    let safeName = Buffer.from(decodeURIComponent(file.originalname), 'utf8')
-      .toString('utf8')
-      .normalize('NFC');
-    safeName = safeName.replace(/[^\w\s.-ก-๙]/gi, '_');
-    const uniqueSuffix = `-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${safeName}${uniqueSuffix}${path.extname(file.originalname)}`);
+    const originalName = Buffer.from(file.originalname, 'binary').toString('utf8');
+    logger.debug('Filename processing', { raw: file.originalname, decoded: originalName });
+    const safeName = originalName.replace(/[\/\\:*?"<>|]/g, '_');
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+    cb(null, `${safeName}-${uniqueSuffix}${path.extname(originalName)}`);
   },
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 50 * 1024 * 1024 },
+  limits: { fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
       'application/pdf',
@@ -49,29 +50,22 @@ router.post('/', upload.single('document'), async (req, res) => {
   }
 
   try {
-    logger.info('Received file upload', {
-      originalName: req.file.originalname,
-      decodedOriginalName: decodeURIComponent(req.file.originalname),
-      filename: req.file.filename,
-      mimetype: req.file.mimetype,
-      size: req.file.size,
-    });
-
+    const originalName = Buffer.from(req.file.originalname, 'binary').toString('utf8');
     const tier = req.body.tier || 'B';
-    const skipOCR = req.body.skipOCR === 'true' ? true : false;
+    const skipOCR = req.body.skipOCR === 'true';
 
-    const document = await documentService.processUploadedFile(req.file, tier, { skipOCR }).catch((err) => {
-      logger.error('Error processing file in service:', { error: err.message, stack: err.stack });
-      throw err;
-    });
+    logger.info('File upload started', { originalName, filename: req.file.filename });
 
+    const document = await documentService.processUploadedFile(req.file, tier, { skipOCR });
+
+    res.set('Content-Type', 'application/json; charset=utf-8');
     res.json({
       success: true,
-      message: 'เริ่มการประมวลผลไฟล์เรียบร้อยแล้ว',
+      message: 'File uploaded and processing started',
       document: {
         documentId: document._id,
-        filename: decodeURIComponent(req.file.originalname),
-        title: decodeURIComponent(req.file.originalname).replace(/\.[^/.]+$/, ''),
+        filename: originalName, // ไม่ encode
+        title: originalName.replace(/\.[^/.]+$/, ''), // ไม่ encode
         tier: document.tier,
         status: document.metadata.processingStatus,
         textLength: document.content?.length || 0,
@@ -81,14 +75,13 @@ router.post('/', upload.single('document'), async (req, res) => {
       },
     });
   } catch (error) {
-    logger.error('Upload error:', { message: error.message, stack: error.stack });
+    logger.error('Upload error', { message: error.message });
     try {
-      if (req.file && (await fs.access(req.file.path).then(() => true).catch(() => false))) {
+      if (req.file?.path && (await fs.access(req.file.path).then(() => true).catch(() => false))) {
         await fs.unlink(req.file.path);
-        logger.info('Cleaned up file after error', { path: req.file.path });
       }
     } catch (cleanupError) {
-      logger.error('Error cleaning up file:', cleanupError);
+      logger.error('Cleanup error', { message: cleanupError.message });
     }
     res.status(500).json({ error: 'การอัปโหลดล้มเหลว', message: error.message });
   }
@@ -96,58 +89,67 @@ router.post('/', upload.single('document'), async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const { tier, limit } = req.query;
+    const { tier, limit, page } = req.query;
     const query = tier ? { tier } : {};
     const documents = await Document.find(query)
-      .limit(parseInt(limit) || 0)
-      .sort({ createdAt: -1 });
+      .select('-chunks.embedding -content')
+      .limit(parseInt(limit) || 20)
+      .skip((parseInt(page) - 1) * parseInt(limit) || 0)
+      .sort({ createdAt: -1 })
+      .lean();
 
+    res.set('Content-Type', 'application/json; charset=utf-8');
     res.json({
       success: true,
-      documents: documents.map((doc) => ({
-        documentId: doc._id,
-        filename: doc.originalName || doc.filename,
-        title: (doc.originalName || doc.filename).replace(/\.[^/.]+$/, ''),
-        tier: doc.tier,
-        status: doc.metadata.processingStatus,
-        chunksCount: doc.chunks?.length || 0,
-        createdAt: doc.createdAt,
-        mimeType: doc.metadata.mimeType,
-      })),
+      documents: documents.map((doc) => {
+        const originalName = doc.originalName || doc.filename; // ไม่ decode ไม่ encode
+        logger.debug('Document retrieved', { documentId: doc._id, originalName });
+        return {
+          documentId: doc._id,
+          filename: originalName,
+          title: originalName.replace(/\.[^/.]+$/, ''),
+          tier: doc.tier,
+          status: doc.metadata.processingStatus,
+          chunksCount: doc.chunks?.length || 0,
+          createdAt: doc.createdAt,
+          mimeType: doc.metadata.mimeType,
+        };
+      }),
     });
   } catch (error) {
-    logger.error('Error fetching documents:', error);
+    logger.error('Error fetching documents', { message: error.message });
     res.status(500).json({ error: 'Failed to fetch documents', message: error.message });
   }
 });
 
 router.get('/stats', async (req, res) => {
   try {
-    const stats = await Document.aggregate([
-      { $group: {
-        _id: '$tier',
-        count: { $sum: 1 },
-        totalSize: { $sum: { $ifNull: ['$metadata.fileSize', 0] } },
-        chunksCount: { $sum: { $size: { $ifNull: ['$chunks', []] } } },
-        processingStatus: { $push: '$metadata.processingStatus' },
-      }},
-    ]);
+    const documents = await Document.find()
+      .select('tier metadata.processingStatus metadata.fileSize chunks')
+      .lean();
 
+    const tierStats = { A: { documents: 0, chunks: 0 }, B: { documents: 0, chunks: 0 }, C: { documents: 0, chunks: 0 } };
+    let totalChunks = 0;
+
+    documents.forEach((doc) => {
+      const tier = doc.tier || 'B';
+      const chunksCount = doc.chunks?.length || 0;
+      tierStats[tier].documents += 1;
+      tierStats[tier].chunks += chunksCount;
+      totalChunks += chunksCount;
+    });
+
+    res.set('Content-Type', 'application/json; charset=utf-8');
     res.json({
       success: true,
-      stats: stats.map((stat) => ({
-        tier: stat._id,
-        count: stat.count,
-        totalSize: stat.totalSize,
-        chunksCount: stat.chunksCount,
-        processingStatus: stat.processingStatus.reduce((acc, status) => {
-          acc[status] = (acc[status] || 0) + 1;
-          return acc;
-        }, {}),
-      })),
+      data: {
+        totalDocuments: documents.length,
+        totalChunks,
+        tierStats,
+      },
     });
   } catch (error) {
-    logger.error('Error fetching stats:', error);
+    logger.error('Error fetching stats', { message: error.message });
     res.status(500).json({ error: 'Failed to fetch stats', message: error.message });
   }
 });
@@ -164,9 +166,10 @@ router.delete('/:id', async (req, res) => {
     }
 
     await document.deleteOne();
+    res.set('Content-Type', 'application/json; charset=utf-8');
     res.json({ success: true, message: 'Document deleted successfully' });
   } catch (error) {
-    logger.error('Error deleting document:', error);
+    logger.error('Error deleting document', { message: error.message });
     res.status(500).json({ error: 'Failed to delete document', message: error.message });
   }
 });

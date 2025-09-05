@@ -32,21 +32,28 @@ const DocumentManager: React.FC = () => {
         const apiUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
         const url = filterTier ? `${apiUrl}/upload-doc?tier=${filterTier}` : `${apiUrl}/upload-doc`;
 
-        const response = await fetch(url);
+        const response = await fetch(url, {
+          headers: { Accept: 'application/json; charset=utf-8' },
+        });
         const data = await response.json();
+
+        console.log('Response headers:', response.headers.get('Content-Type'));
+        console.log('Raw documents:', data.documents);
 
         if (response.ok) {
           setDocuments(
-            data.documents?.map((doc: any) => ({
-              id: doc.documentId || doc._id,
-              title: doc.title || doc.filename,
-              file_name: doc.filename,
-              file_type: doc.mimeType || 'unknown',
-              tier: doc.tier,
-              processed: doc.status === 'completed',
-              chunk_count: doc.chunksCount || 0,
-              upload_date: doc.createdAt, // ใช้ createdAt จาก schema
-            })) || []
+            data.documents?.map((doc: any) => {
+              return {
+                id: doc.documentId || doc._id,
+                title: doc.originalName || doc.title || 'ไม่ระบุชื่อ', // ✅ ใช้ชื่อไฟล์จริง
+                file_name: doc.filename, // ใช้ backend อ้างอิงเท่านั้น
+                file_type: doc.mimeType || 'unknown',
+                tier: doc.tier,
+                processed: doc.status === 'completed' || doc.processed,
+                chunk_count: doc.chunksCount || doc.chunk_count || 0,
+                upload_date: doc.createdAt || doc.uploadedAt,
+              };
+            }) || []
           );
           setError(null);
           return;
@@ -59,7 +66,7 @@ const DocumentManager: React.FC = () => {
         if (retries === 0) {
           setError('ไม่สามารถโหลดรายการเอกสารได้ กรุณาลองใหม่');
         }
-        await new Promise((resolve) => setTimeout(resolve, 1000)); // รอ 1 วินาทีก่อนลองใหม่
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       } finally {
         setLoading(false);
       }
@@ -83,12 +90,14 @@ const DocumentManager: React.FC = () => {
       const response = await fetch(`${apiUrl}/upload-doc`, {
         method: 'POST',
         body: formData,
+        headers: { Accept: 'application/json; charset=utf-8' },
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        setSuccess(`อัปโหลดเอกสาร "${data.document.title || data.document.filename}" สำเร็จ`);
+        const decodedTitle = data.document.originalName || data.document.title || data.document.filename;
+        setSuccess(`อัปโหลดเอกสาร "${decodedTitle}" สำเร็จ`);
         await fetchDocuments();
         event.target.value = '';
       } else {
@@ -111,6 +120,7 @@ const DocumentManager: React.FC = () => {
       const apiUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
       const response = await fetch(`${apiUrl}/upload-doc/${documentId}`, {
         method: 'DELETE',
+        headers: { Accept: 'application/json; charset=utf-8' },
       });
 
       const data = await response.json();
@@ -265,7 +275,9 @@ const DocumentManager: React.FC = () => {
                     <div className="flex flex-col sm:flex-row sm:items-center space-y-2 sm:space-y-0 sm:space-x-3 mb-2">
                       <h4 className="text-base lg:text-lg font-medium text-gray-900">{doc.title}</h4>
                       <span
-                        className={`px-2 py-1 text-xs font-medium rounded-full border ${getTierBadgeColor(doc.tier)}`}
+                        className={`px-2 py-1 text-xs font-medium rounded-full border ${getTierBadgeColor(
+                          doc.tier
+                        )}`}
                       >
                         Tier {doc.tier}
                       </span>
@@ -276,7 +288,7 @@ const DocumentManager: React.FC = () => {
                       )}
                     </div>
 
-                    <p className="text-sm text-gray-600 mb-1">ไฟล์: {doc.file_name}</p>
+                    <p className="text-sm text-gray-600 mb-1">ไฟล์: {doc.title}</p>
                     <p className="text-sm text-gray-600 mb-2 hidden sm:block">
                       อัปโหลดเมื่อ:{' '}
                       {new Date(doc.upload_date).toLocaleDateString('th-TH', {
