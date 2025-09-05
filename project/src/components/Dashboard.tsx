@@ -191,20 +191,23 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Recent Activity */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 lg:p-6">
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <Zap className="w-5 h-5 mr-2 text-blue-600" />
+        {/* Recent Activity with scroll */}
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-5 lg:p-6 hover:shadow-2xl transition-shadow">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+            <Zap className="w-5 h-5 text-blue-600 animate-bounce" />
             กิจกรรมล่าสุด
           </h3>
-          
-          <div className="space-y-3">
+
+          <div className="max-h-72 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
             {stats?.recentActivity.length === 0 ? (
               <p className="text-gray-500 text-center py-8">ยังไม่มีกิจกรรม</p>
             ) : (
               stats?.recentActivity.map((activity, index) => (
-                <div key={index} className="flex items-start space-x-3 p-2 lg:p-3 hover:bg-gray-50 rounded-lg transition-colors">
-                  <FileText className="w-4 h-4 text-green-600 mt-1" />
+                <div
+                  key={index}
+                  className="flex items-start space-x-3 p-3 hover:bg-gray-50 rounded-lg transition-colors shadow-sm"
+                >
+                  <FileText className="w-5 h-5 text-green-600 mt-1 flex-shrink-0" />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm text-gray-900">{activity.message}</p>
                     <p className="text-xs text-gray-500 mt-1 hidden sm:block">

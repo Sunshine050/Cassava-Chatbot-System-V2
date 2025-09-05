@@ -34,45 +34,47 @@ class DocumentService {
 
         if (!text && !options.skipOCR) {
           logger.warn('No text found in PDF, attempting OCR', { filePath });
-          text = await this.ocrPDF(filePath, pdfData.numpages || 1);
+          try {
+            text = await this.ocrPDF(filePath, pdfData.numpages || 1);
+          } catch (ocrErr) {
+            logger.error('OCR failed, using fallback', { message: ocrErr.message });
+            text = '[OCR failed]';
+          }
         }
 
-        if (!text) logger.warn('No text extracted from PDF', { filePath });
-        return text.trim();
+        return text.trim() || '[OCR failed]';
       } else if (
         mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
         mimeType === 'application/msword'
       ) {
         const result = await mammoth.extractRawText({ path: filePath });
-        return result.value.trim();
+        return result.value.trim() || '[No text extracted]';
       } else if (mimeType.startsWith('image/')) {
         if (!options.skipOCR) {
           logger.info('Processing image with OCR', { filePath });
-          return await this.ocrImage(filePath);
+          try {
+            return await this.ocrImage(filePath);
+          } catch (ocrErr) {
+            logger.error('OCR image failed, using fallback', { message: ocrErr.message });
+            return '[OCR failed]';
+          }
         }
         logger.warn('Skipping OCR for image', { filePath });
-        return '';
+        return '[OCR skipped]';
       } else {
         throw new Error(`Unsupported file type: ${mimeType}`);
       }
     } catch (error) {
       logger.error('Error extracting text', { message: error.message });
-      throw error;
+      return '[Error extracting text]';
     }
   }
 
   async ocrImage(filePath) {
     const worker = createWorker({ logger: m => logger.debug('Tesseract', m) });
     try {
-      await worker.load();
-      await worker.loadLanguage('eng+tha');
-      await worker.initialize('eng+tha');
-
-      const { data: { text } } = await worker.recognize(filePath);
-      return text.trim();
-    } catch (error) {
-      logger.error('OCR image error', { message: error.message });
-      throw error;
+      const { data: { text } } = await worker.recognize(filePath, 'eng+tha');
+      return text.trim() || '[OCR failed]';
     } finally {
       await worker.terminate();
     }
@@ -81,83 +83,89 @@ class DocumentService {
   async ocrPDF(filePath, numPages) {
     let fullText = '';
     const pdf2picOptions = {
-      density: 300,
+      density: 150,
       format: 'png',
-      width: 2480,
-      height: 3508,
+      width: 1240,
+      height: 1754,
       saveFilename: 'temp_page',
       savedir: this.tempDir,
     };
     const converter = fromPath(filePath, pdf2picOptions);
-    const worker = createWorker({ logger: m => logger.debug('Tesseract', m) });
 
-    try {
-      await worker.load();
-      await worker.loadLanguage('eng+tha');
-      await worker.initialize('eng+tha');
-
-      for (let page = 1; page <= numPages; page++) {
-        try {
-          const image = await converter(page);
-          const { data: { text } } = await worker.recognize(image.path);
-          fullText += text + '\n';
-          await fs.unlink(image.path).catch(() => logger.warn('Failed to delete temp image', { page }));
-        } catch (pageErr) {
-          logger.error(`OCR error on page ${page}`, { message: pageErr.message });
-        }
+    for (let page = 1; page <= numPages; page++) {
+      let image;
+      try {
+        image = await converter(page);
+      } catch (convErr) {
+        logger.error(`PDF to image conversion failed for page ${page}`, { message: convErr.message });
+        fullText += `[PDF page ${page} conversion failed]\n`;
+        continue;
       }
 
-      return fullText.trim();
-    } catch (error) {
-      logger.error('OCR PDF error', { message: error.message });
-      throw error;
-    } finally {
-      await worker.terminate();
+      const worker = createWorker({ logger: m => logger.debug('Tesseract', m) });
+      try {
+        const { data: { text } } = await worker.recognize(image.path, 'eng+tha');
+        fullText += text.trim() ? text + '\n' : `[OCR failed on page ${page}]\n`;
+      } catch (ocrErr) {
+        logger.error(`OCR error on page ${page}`, { message: ocrErr.message });
+        fullText += `[OCR failed on page ${page}]\n`;
+      } finally {
+        await worker.terminate();
+        await fs.unlink(image.path).catch(() => logger.warn('Failed to delete temp image', { page }));
+      }
     }
+
+    return fullText.trim() || '[OCR failed for all pages]';
   }
 
   async processUploadedFile(file, tier, options = { skipOCR: false }) {
+    const filePath = path.join(this.uploadsDir, file.filename);
+    const originalName = Buffer.from(file.originalname, 'binary').toString('utf8');
+
+    let text = '[No text]';
     try {
-      const filePath = path.join(this.uploadsDir, file.filename);
-      const originalName = Buffer.from(file.originalname, 'binary').toString('utf8');
-      logger.info('File upload started', { filename: file.filename, originalName });
+      text = await this.extractTextFromFile(filePath, file.mimetype, options);
+    } catch (err) {
+      logger.error('Error extracting text, using fallback', { message: err.message });
+    }
 
-      const text = await this.extractTextFromFile(filePath, file.mimetype, options);
+    const document = new Document({
+      filename: file.filename,
+      originalName,
+      content: text,
+      tier: tier || 'B',
+      metadata: {
+        fileSize: file.size,
+        mimeType: file.mimetype,
+        processingStatus: 'processing',
+      },
+    });
 
-      const document = new Document({
-        filename: file.filename,
-        originalName,
-        content: text,
-        tier: tier || 'B',
-        metadata: {
-          fileSize: file.size,
-          mimeType: file.mimetype,
-          processingStatus: 'processing',
-        },
-      });
-
+    try {
       await document.save();
       logger.info('Document saved', { documentId: document._id, originalName });
-
-      this.processDocumentEmbeddings(document._id, text).catch((err) => {
-        logger.error('Background processing error', { documentId: document._id, message: err.message });
-        Document.findByIdAndUpdate(document._id, { 'metadata.processingStatus': 'failed' }).catch(() => {});
-      });
-
-      return document;
-    } catch (error) {
-      logger.error('Error processing file', { message: error.message });
-      throw error;
-    } finally {
-      try {
-        if (await fs.access(file.path).then(() => true).catch(() => false)) {
-          await fs.unlink(file.path);
-          logger.info('Cleaned up file', { path: file.path });
-        }
-      } catch (cleanupError) {
-        logger.warn('Cleanup error', { message: cleanupError.message });
-      }
+    } catch (saveErr) {
+      logger.error('Error saving document', { message: saveErr.message });
+      throw saveErr;
     }
+
+    // background embeddings
+    this.processDocumentEmbeddings(document._id, text).catch((err) => {
+      logger.error('Background processing error', { documentId: document._id, message: err.message });
+      Document.findByIdAndUpdate(document._id, { 'metadata.processingStatus': 'failed' }).catch(() => {});
+    });
+
+    // cleanup upload
+    try {
+      if (await fs.access(file.path).then(() => true).catch(() => false)) {
+        await fs.unlink(file.path);
+        logger.info('Cleaned up file', { path: file.path });
+      }
+    } catch (cleanupError) {
+      logger.warn('Cleanup error', { message: cleanupError.message });
+    }
+
+    return document;
   }
 
   async processDocumentEmbeddings(documentId, content) {
@@ -167,7 +175,7 @@ class DocumentService {
 
       const chunksWithEmbeddings = chunks.map((chunk, idx) => ({
         text: chunk,
-        embedding: [], // สำหรับตอนนี้เว้นว่าง
+        embedding: [],
         chunkIndex: idx,
       }));
 
