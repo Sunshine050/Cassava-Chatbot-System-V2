@@ -1,0 +1,52 @@
+{
+  "name": "cassava-chatbot-backend",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "description": "Backend API for Cassava Chatbot System",
+  "main": "server.cjs",
+  "scripts": {
+    "start": "node server.cjs",
+    "dev": "nodemon server.cjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@google-cloud/vision": "^5.3.3",
+    "@mistralai/mistralai": "^0.4.0",
+    "axios": "^1.6.2",
+    "compression": "^1.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "helmet": "^7.2.0",
+    "mammoth": "^1.10.0",
+    "mongodb": "^6.3.0",
+    "mongoose": "^8.18.0",
+    "morgan": "^1.10.1",
+    "multer": "^1.4.5-lts.1",
+    "path": "^0.12.7",
+    "pdf-parse": "^1.1.1",
+    "pdf2pic": "^3.2.0",
+    "python-shell": "^5.0.0",
+    "rate-limiter-flexible": "^2.4.2",
+    "sharp": "^0.34.3",
+    "tesseract.js": "^6.0.1",
+    "uuid": "^9.0.1",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.11",
+    "@types/uuid": "^9.0.7",
+    "nodemon": "^3.1.10"
+  },
+  "keywords": [
+    "chatbot",
+    "cassava",
+    "rag",
+    "openai",
+    "agriculture"
+  ],
+  "author": "Cassava Chatbot Team",
+  "license": "MIT"
+}
